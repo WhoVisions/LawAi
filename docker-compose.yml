@@ -1,0 +1,81 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: ankane/pgvector:latest
+    container_name: lexicore-postgres
+    environment:
+      POSTGRES_USER: lexicore
+      POSTGRES_PASSWORD: dev_password
+      POSTGRES_DB: lexicore_dev
+      POSTGRES_INITDB_ARGS: "-E UTF8 --locale=C"
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lexicore"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - lexicore-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: lexicore-redis
+    command: redis-server --appendonly yes --requirepass dev_redis_password
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - lexicore-network
+
+  # Optional: Redis Commander for viewing Redis data
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: lexicore-redis-commander
+    environment:
+      - REDIS_HOSTS=local:redis:6379:0:dev_redis_password
+    ports:
+      - "8081:8081"
+    depends_on:
+      - redis
+    networks:
+      - lexicore-network
+    profiles:
+      - tools
+
+  # Optional: pgAdmin for database management
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: lexicore-pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@lexicore.local
+      PGADMIN_DEFAULT_PASSWORD: admin
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+    ports:
+      - "5050:80"
+    depends_on:
+      - postgres
+    networks:
+      - lexicore-network
+    profiles:
+      - tools
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+
+networks:
+  lexicore-network:
+    driver: bridge

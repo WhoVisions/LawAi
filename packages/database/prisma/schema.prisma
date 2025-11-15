@@ -1,0 +1,388 @@
+// LexiCore Database Schema
+// PostgreSQL 16 with pgvector extension
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../node_modules/.prisma/client"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================================
+// CORE USER MANAGEMENT
+// ============================================================================
+
+enum Role {
+  GUEST
+  CITIZEN_USER
+  PRELAW
+  LAW_STUDENT
+  LICENSED_ATTORNEY
+  ORG_ADMIN
+  SYSTEM_ADMIN
+}
+
+model User {
+  id              String    @id @default(uuid())
+  email           String    @unique
+  name            String?
+  authProviderId  String?   @unique // Clerk/Auth0 ID
+  primaryRole     Role      @default(CITIZEN_USER)
+  jurisdiction    String?   // e.g., "NY"
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  deletedAt       DateTime?
+
+  // Relations
+  roles             UserRole[]
+  settings          UserSettings?
+  notifications     NotificationSettings?
+  ownedMatters      Matter[]              @relation("OwnedMatters")
+  matterParticipations MatterParticipant[]
+  aiUsage           AIUsageLog[]
+  auditLogs         AuditLog[]
+  learningProgress  UserLearningProgress[]
+  subscription      Subscription?
+
+  @@index([email])
+  @@index([authProviderId])
+  @@index([deletedAt])
+  @@map("users")
+}
+
+model UserRole {
+  id         String    @id @default(uuid())
+  userId     String
+  role       Role
+  verifiedAt DateTime?
+  verifierId String?
+  metadata   Json?     // e.g., { barNumber: "NY12345", jurisdiction: "NY" }
+  createdAt  DateTime  @default(now())
+
+  user     User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  verifier User? @relation("RoleVerifier", fields: [verifierId], references: [id])
+
+  @@unique([userId, role])
+  @@index([userId])
+  @@map("user_roles")
+}
+
+model UserSettings {
+  userId                String   @id
+  theme                 String   @default("dark")
+  language              String   @default("en")
+  timezone              String   @default("America/New_York")
+  allowAiTrainingOptIn  Boolean  @default(false)
+  dataRetentionDays     Int      @default(365)
+  updatedAt             DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_settings")
+}
+
+model NotificationSettings {
+  userId                   String   @id
+  emailEnabled             Boolean  @default(true)
+  pushEnabled              Boolean  @default(false)
+  legalRemindersEnabled    Boolean  @default(true)
+  learningRemindersEnabled Boolean  @default(true)
+  marketingEnabled         Boolean  @default(false)
+  updatedAt                DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("notification_settings")
+}
+
+// ============================================================================
+// MATTERS DOMAIN
+// ============================================================================
+
+enum MatterType {
+  LANDLORD_TENANT
+  EMPLOYMENT
+  CONSUMER
+  TRAFFIC
+  SMALL_CLAIMS
+  CRIMINAL
+  EVICTION
+  CHILD_CUSTODY
+  IMMIGRATION
+  BANKRUPTCY
+  FAMILY
+  OTHER
+}
+
+enum MatterStatus {
+  DRAFT
+  ACTIVE
+  NEEDS_ATTORNEY
+  ATTORNEY_REVIEW
+  RESOLVED
+  ARCHIVED
+}
+
+enum RiskLevel {
+  LOW
+  NORMAL
+  HIGH
+}
+
+model Matter {
+  id           String       @id @default(uuid())
+  ownerId      String
+  title        String
+  type         MatterType
+  status       MatterStatus @default(DRAFT)
+  riskLevel    RiskLevel    @default(NORMAL)
+  jurisdiction String       // e.g., "NY"
+  description  String?
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+  deletedAt    DateTime?
+
+  owner        User                @relation("OwnedMatters", fields: [ownerId], references: [id])
+  participants MatterParticipant[]
+  documents    Document[]
+  timeline     TimelineEvent[]
+  aiSessions   AIChatHistory[]
+
+  @@index([ownerId])
+  @@index([status])
+  @@index([type])
+  @@index([deletedAt])
+  @@map("matters")
+}
+
+enum ParticipantRole {
+  OWNER
+  ATTORNEY
+  COLLABORATOR
+}
+
+model MatterParticipant {
+  id           String          @id @default(uuid())
+  matterId     String
+  userId       String
+  role         ParticipantRole
+  isPrivileged Boolean         @default(false) // Attorney-client privilege
+  addedAt      DateTime        @default(now())
+
+  matter Matter @relation(fields: [matterId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id])
+
+  @@unique([matterId, userId])
+  @@index([userId])
+  @@map("matter_participants")
+}
+
+enum DocumentType {
+  LEASE
+  CONTRACT
+  TICKET
+  NOTICE
+  LETTER
+  EVIDENCE
+  OTHER
+}
+
+model Document {
+  id           String       @id @default(uuid())
+  matterId     String
+  uploadedBy   String
+  fileName     String
+  fileSize     Int          // bytes
+  mimeType     String
+  storageUrl   String       // S3/Cloudflare R2 URL
+  documentType DocumentType @default(OTHER)
+  description  String?
+  uploadedAt   DateTime     @default(now())
+
+  matter Matter @relation(fields: [matterId], references: [id], onDelete: Cascade)
+
+  @@index([matterId])
+  @@map("documents")
+}
+
+model TimelineEvent {
+  id          String   @id @default(uuid())
+  matterId    String
+  date        DateTime
+  title       String
+  description String?
+  createdBy   String
+  createdAt   DateTime @default(now())
+
+  matter Matter @relation(fields: [matterId], references: [id], onDelete: Cascade)
+
+  @@index([matterId, date])
+  @@map("timeline_events")
+}
+
+// ============================================================================
+// AI & LEARNING
+// ============================================================================
+
+model AIUsageLog {
+  id               String   @id @default(uuid())
+  userId           String
+  model            String   // e.g., "gpt-4-turbo-preview"
+  promptTokens     Int
+  completionTokens Int
+  costCents        Int      // Cost in cents
+  metadata         Json?    // { feature: "chat", matterId: "..." }
+  createdAt        DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId, createdAt])
+  @@index([createdAt])
+  @@map("ai_usage_logs")
+}
+
+model AIChatHistory {
+  id        String   @id @default(uuid())
+  matterId  String?
+  userId    String
+  role      String   // "user" | "assistant" | "system"
+  content   String   @db.Text
+  metadata  Json?    // { model: "gpt-4", tokens: 123 }
+  createdAt DateTime @default(now())
+
+  matter Matter? @relation(fields: [matterId], references: [id], onDelete: Cascade)
+
+  @@index([matterId, createdAt])
+  @@index([userId, createdAt])
+  @@map("ai_chat_history")
+}
+
+// Note: pgvector field requires raw SQL - see migration file
+model LegalDocument {
+  id        String   @id @default(uuid())
+  content   String   @db.Text
+  // embedding vector(1536) - defined in migration
+  metadata  Json     // { source: "NY statute 123", jurisdiction: "NY", type: "statute" }
+  createdAt DateTime @default(now())
+
+  @@map("legal_documents")
+}
+
+enum TrackType {
+  LEGAL_LITERACY
+  PRELAW
+  BAR_PREP
+}
+
+model LearningTrack {
+  id           String     @id @default(uuid())
+  title        String
+  description  String?
+  type         TrackType
+  jurisdiction String     @default("NY")
+  order        Int        @default(0)
+  published    Boolean    @default(false)
+  createdAt    DateTime   @default(now())
+
+  lessons      Lesson[]
+  userProgress UserLearningProgress[]
+
+  @@map("learning_tracks")
+}
+
+model Lesson {
+  id               String   @id @default(uuid())
+  trackId          String
+  title            String
+  content          String   @db.Text
+  order            Int      @default(0)
+  estimatedMinutes Int      @default(15)
+
+  track LearningTrack @relation(fields: [trackId], references: [id], onDelete: Cascade)
+
+  @@index([trackId, order])
+  @@map("lessons")
+}
+
+model UserLearningProgress {
+  id             String   @id @default(uuid())
+  userId         String
+  trackId        String
+  lessonId       String?
+  completed      Boolean  @default(false)
+  score          Int?     // 0-100
+  timeSpentSec   Int      @default(0)
+  lastAccessedAt DateTime @default(now())
+
+  user  User          @relation(fields: [userId], references: [id])
+  track LearningTrack @relation(fields: [trackId], references: [id])
+
+  @@unique([userId, trackId, lessonId])
+  @@index([userId])
+  @@map("user_learning_progress")
+}
+
+// ============================================================================
+// AUDIT & COMPLIANCE
+// ============================================================================
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  userId     String?
+  eventType  String   // e.g., "MATTER_CREATED", "AI_QUERY"
+  entityType String?  // e.g., "MATTER", "USER"
+  entityId   String?
+  metadata   Json?    // Full context of the event
+  ipAddress  String?
+  userAgent  String?
+  timestamp  DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id])
+
+  @@index([userId, timestamp])
+  @@index([eventType, timestamp])
+  @@index([entityType, entityId])
+  @@map("audit_logs")
+}
+
+// ============================================================================
+// SUBSCRIPTIONS & BILLING
+// ============================================================================
+
+enum SubscriptionTier {
+  FREE
+  CITIZEN
+  PRELAW
+  BAR_PREP
+  LAWYER_PRO
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  CANCELED
+  PAST_DUE
+  PAUSED
+}
+
+model Subscription {
+  id                   String             @id @default(uuid())
+  userId               String             @unique
+  tier                 SubscriptionTier   @default(FREE)
+  status               SubscriptionStatus @default(ACTIVE)
+  stripeCustomerId     String?
+  stripeSubscriptionId String?
+  currentPeriodStart   DateTime
+  currentPeriodEnd     DateTime
+  cancelAt             DateTime?
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([status])
+  @@map("subscriptions")
+}
