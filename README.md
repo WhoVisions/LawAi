@@ -539,3 +539,16 @@ All AI-generated content may contain errors. Users are responsible for verifying
 **Built with ❤️ in New York**
 
 *Empowering legal literacy, one user at a time.*
+
+<!-- nougen:fleet-role:begin (generated from NouGenRelay fleet/manifest.json; edit the manifest, not this block) -->
+## Fleet role
+
+| | |
+|---|---|
+| Role | LawAi (Shell) |
+| Kind | genesis_domain |
+| Status | canonical |
+| Canonical for | lawai |
+| Visibility | public |
+
+<!-- nougen:fleet-role:end -->
